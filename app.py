@@ -42,7 +42,7 @@ def save_history(date, file_name, media_type, detection_data):
     if media_type == "image":
         entry["num_people"] = detection_data
     elif media_type == "video":
-        entry["frames"] = detection_data  
+        entry["frames"] = detection_data  # list of {"frame": int, "num_people": int}
     
     history.append(entry)
     with open(history_file, "w") as f:
@@ -87,8 +87,24 @@ def detect_people_video(video_path):
         st.error("Model failed to load. Check the console for details.")
         return 0, None
     cap = cv2.VideoCapture(video_path)
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter('results/output_video.mp4', fourcc, 20.0, (int(cap.get(3)), int(cap.get(4))))
+    if not cap.isOpened():
+        st.error("Failed to open video file.")
+        return 0, None
+    
+    # Получение параметров видео
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    
+    # Использование кодека H.264 для совместимости с веб
+    fourcc = cv2.VideoWriter_fourcc(*'avc1')  # H.264 codec
+    output_path = 'results/output_video.mp4'
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    if not out.isOpened():
+        st.error("Failed to initialize video writer.")
+        cap.release()
+        return 0, None
+    
     max_people = 0
     frame_counts = []
     frame_number = 0
@@ -124,11 +140,16 @@ def detect_people_video(video_path):
     cap.release()
     out.release()
     
+    # Проверка, что файл был создан и доступен
+    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+        st.error("Failed to create processed video file.")
+        return 0, None
+    
     # Сохранение истории
     date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     save_history(date, os.path.basename(video_path), "video", frame_counts)
     
-    return max_people, 'results/output_video.mp4'
+    return max_people, output_path
 
 # Функция для генерации данных отчета
 def generate_report_data():
@@ -156,7 +177,7 @@ def generate_report_data():
     df = pd.DataFrame(data, columns=["Date", "File Name", "Type", "Frame Number", "Number of People"])
     return df
 
-
+# Интерфейс Streamlit
 st.title("Подсчет гостей за столом в кафе")
 
 # Загрузка файла (фото или видео)
@@ -177,23 +198,26 @@ if uploaded_file is not None:
     elif "video" in file_type:
         max_people, output_file = detect_people_video(file_path)
         if output_file:
-            st.video(output_file)
-            st.write(f"Максимальное количество гостей: {max_people}")
-            with open(output_file, "rb") as f:
-                st.download_button("Скачать обработанное видео", f, file_name="result.mp4", mime="video/mp4")
+            try:
+                st.video(output_file)
+                st.write(f"Максимальное количество гостей: {max_people}")
+                with open(output_file, "rb") as f:
+                    st.download_button("Скачать обработанное видео", f, file_name="result.mp4", mime="video/mp4")
+            except Exception as e:
+                st.error(f"Failed to display video: {str(e)}")
 
 # Кнопка для генерации отчета
-if st.button("Генерация отчета"):
+if st.button("Generate Report"):
     df = generate_report_data()
     if not df.empty:
         excel_file = io.BytesIO()
         df.to_excel(excel_file, index=False)
         excel_file.seek(0)
         st.download_button(
-            label="Скачать отчет Exel",
+            label="Download Excel Report",
             data=excel_file,
             file_name="detection_report.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
-        st.write("Нет данных для создания отчета.")
+        st.write("No history data available to generate a report.")
